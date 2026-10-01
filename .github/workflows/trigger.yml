@@ -107,6 +107,70 @@ jobs:
             echo "kuch nahi bhejna"
           fi
 
+      - name: Status page ka data likho
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.request
+          from datetime import datetime, timezone
+
+          TOKEN = os.environ["TOKEN"]
+          PRIV = os.environ["PRIVATE_REPO"]
+          SELF = os.environ["SELF_REPO"]
+          API = "https://api.github.com"
+
+          def req(url, data=None):
+              r = urllib.request.Request(url, data=data,
+                                         method="PUT" if data else "GET")
+              r.add_header("Authorization", "Bearer " + TOKEN)
+              r.add_header("Accept", "application/vnd.github+json")
+              r.add_header("User-Agent", "alarm")
+              if data:
+                  r.add_header("Content-Type", "application/json")
+              return json.load(urllib.request.urlopen(r, timeout=30))
+
+          def read(repo, path):
+              try:
+                  j = req(f"{API}/repos/{repo}/contents/{path}")
+                  return json.loads(base64.b64decode(j["content"])), j["sha"]
+              except Exception:
+                  return None, None
+
+          # ---- private repo se post ka hisaab lein
+          raw, _ = read(PRIV, "data/slot_posts.json")
+          posts = []
+          if isinstance(raw, dict):
+              for v in raw.values():
+                  if isinstance(v, dict) and v.get("at"):
+                      posts.append({"at": v["at"], "slot": v.get("slot"),
+                                    "video_id": v.get("video_id")})
+          posts.sort(key=lambda p: p["at"], reverse=True)
+
+          # ---- purana status dekho: har 2 minute naya commit na ho
+          old, sha = read(SELF, "status.json")
+          now = datetime.now(timezone.utc)
+          if old and old.get("posts") == posts and old.get("alive_at"):
+              try:
+                  age = (now - datetime.fromisoformat(old["alive_at"])).total_seconds() / 60
+                  if age < 20:
+                      print(f"status naya hi hai ({age:.0f} min purana), chhora")
+                      raise SystemExit(0)
+              except (TypeError, ValueError):
+                  pass
+
+          out = {"updated_at": now.isoformat(),
+                 "alive_at": now.isoformat(),
+                 "posts": posts}
+          body = json.dumps(out, indent=2, ensure_ascii=False).encode("utf-8")
+
+          payload = {"message": "status update",
+                     "content": base64.b64encode(body).decode(),
+                     "branch": "main"}
+          if sha:
+              payload["sha"] = sha
+          req(f"{API}/repos/{SELF}/contents/status.json", data=json.dumps(payload).encode())
+          print(f"status likha: {len(posts)} posts")
+          PY
+
       - name: 15 minute intezaar, phir KHUD ko dobara jagay do
         run: |
           sleep "$SLEEP"
