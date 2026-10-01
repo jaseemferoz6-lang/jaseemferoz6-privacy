@@ -1,0 +1,87 @@
+name: trigger urdu shorts
+
+# Ye repo sirf ek ghanti ka alarm hai. Asal code aur photos PRIVATE repo me
+# hain (urdu-quote-shorts), aur wahi video banata hai.
+#
+# Kyun zaroori hai: GitHub ke scheduled runs PRIVATE repos me 4-7 ghante
+# late chalte hain - kabhi poora din miss ho jata hai. PUBLIC repos me
+# schedule reliable hota hai, is liye ye chhoti public repo har 15 minute
+# me private repo ko jagati hai.
+#
+# Photos private rehni hain, is liye private/public ka ye combination
+# chahiye: alarm public, maalik private.
+on:
+  schedule:
+    - cron: "3,18,33,48 * * * *"   # ghante ki 4 quarter me, minute 3 ka offset
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+      REPO: jaseemferoz6-lang/urdu-quote-shorts
+      WF: daily.yml
+
+    steps:
+      - name: Kya is waqt koi post due hai?
+        id: gate
+        run: |
+          set -euo pipefail
+          HH=$(TZ=Asia/Karachi date +%H)
+          MM=$(TZ=Asia/Karachi date +%M)
+          now=$((10#$HH * 60 + 10#$MM))
+          echo "Pakistan waqt: $(TZ=Asia/Karachi date '+%H:%M')"
+
+          # ---- YEH TABLE config/config.yaml ke `slots:` se MATCH hona chahiye.
+          # ---- Badalna ho to dono jagah badlein, warna post galat waqt pe.
+          # name | theme | window se | window tak (minutes)
+          cat <<'TABLE' > /tmp/table
+          midnight|00:00|02:30
+          morning|10:00|12:00
+          night|19:00|22:00
+          TABLE
+
+          slot=""
+          while IFS='|' read -r name from to; do
+            [ -z "$name" ] && continue
+            sh=${from%:*}; sm=${from#*:}
+            eh=${to%:*};   em=${to#*:}
+            a=$((10#$sh * 60 + 10#$sm))
+            b=$((10#$eh * 60 + 10#$em))
+            if [ "$a" -le "$b" ]; then
+              [ "$now" -ge "$a" ] && [ "$now" -le "$b" ] && slot="$name"
+            else
+              # window jo raat ke baad tak chalta hai, jaise 19:00-22:00
+              [ "$now" -ge "$a" ] || [ "$now" -le "$b" ] && [ -z "$slot" ] && slot="$name"
+            fi
+          done < /tmp/table
+
+          if [ -n "$slot" ]; then
+            echo "due=true"  >> "$GITHUB_OUTPUT"
+            echo "slot=$slot" >> "$GITHUB_OUTPUT"
+            echo "iss waqt $slot post due hai"
+          else
+            echo "due=false" >> "$GITHUB_OUTPUT"
+            echo "koi slot nahi, private repo ko nahi bula rahe"
+          fi
+
+      - name: Private repo ka pipeline jagay do
+        if: steps.gate.outputs.due == 'true'
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /tmp/out.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/actions/workflows/$WF/dispatches")
+          echo "HTTP $code"
+          cat /tmp/out.json || true
+          if [ "$code" != "204" ]; then
+            echo "::error::dispatch nahi hua (HTTP $code)"
+            exit 1
+          fi
+          echo "private repo ko ${{ steps.gate.outputs.slot }} ka kaam bhej diya"
