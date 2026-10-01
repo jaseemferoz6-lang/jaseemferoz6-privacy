@@ -84,6 +84,18 @@ const URS = { midnight: "Raat wali", morning: "Behadari", night: "Shaam wali" };
 const hhmm = m => String(Math.floor(m/60)).padStart(2,"0") + ":" + String(m%60).padStart(2,"0");
 const mins = s => { const p = s.split(":"); return +p[0]*60 + +p[1]; };
 
+// Pakistan (UTC+5) ke hisaab se kisi bhi waqt ke hisse. Browser jis bhi
+// desh me ho, yahan hamesha Pakistan ka waqt aayega.
+function pkParts(d) {
+  const p = new Date(d.getTime() + (5*60 + d.getTimezoneOffset())*60000);
+  return { y: p.getFullYear(), m: p.getMonth()+1, day: p.getDate(),
+           mins: p.getHours()*60 + p.getMinutes() };
+}
+// "2026-10-01:morning" - taaki post ka hisaab aur hisaab-milane wala hisaab
+// dono aik hi shakal ke hon.
+const pkey = (p, slot) =>
+  p.y + "-" + String(p.m).padStart(2,"0") + "-" + String(p.day).padStart(2,"0") + ":" + slot;
+
 // "2026-10-01T10:31:00+05:00" ko Pakistan ke hisaab se minute-of-day banao
 function minuteOfDay(iso) {
   const d = new Date(iso);
@@ -100,19 +112,14 @@ function dateLabel(iso) {
 }
 
 function nextPost(posts) {
-  const now = new Date();
-  const pk = new Date(now.getTime() + (5*60 + now.getTimezoneOffset())*60000);
-  const nowM = pk.getHours()*60 + pk.getMinutes();
-  const done = new Set(posts.map(p => p.at.slice(0,10) + ":" + p.slot));
-
+  const done = new Set((posts || []).map(p => p.at.slice(0,10) + ":" + p.slot));
+  const p0 = pkParts(new Date());
   for (let add = 0; add <= 1440; add++) {
-    const m = (nowM + add) % 1440;
+    const p = pkParts(new Date(Date.now() + add*60000));
     for (const s of SLOTS) {
-      if (m >= s.from && m <= s.to) {
-        const probe = new Date(pk.getTime() + add*60000);
-        const key = probe.getFullYear() + "-" + (probe.getMonth()+1) + "-" + probe.getDate() + ":" + s.name;
-        if (!done.has(key)) {
-          return { slot: s, mins: m, days: Math.floor((nowM + add)/1440) };
+      if (p.mins >= s.from && p.mins <= s.to) {
+        if (!done.has(pkey(p, s.name))) {
+          return { slot: s, mins: p.mins, days: Math.floor((p0.mins + add)/1440) };
         }
       }
     }
