@@ -1,19 +1,29 @@
 name: trigger urdu shorts
 
-# Ye repo sirf ek ghanti ka alarm hai. Asal code aur photos PRIVATE repo me
-# hain (urdu-quote-shorts), aur wahi video banata hai.
+# Ye chhoti PUBLIC repo sirf "alarm" hai. Asal code aur photos PRIVATE repo
+# (urdu-quote-shorts) me hain, aur wahi video banata hai.
 #
-# Kyun zaroori hai: GitHub ke scheduled runs PRIVATE repos me 4-7 ghante
-# late chalte hain - kabhi poora din miss ho jata hai. PUBLIC repos me
-# schedule reliable hota hai, is liye ye chhoti public repo har 15 minute
-# me private repo ko jagati hai.
+# ---- Cron kyun nahi chal raha ----
+# Is account par GitHub ke scheduled runs bilkul nahi chal rahe: private repo
+# ka ghante-wala cron 4-7 ghante late tha (kai roz poori tarah miss), aur is
+# public repo ka cron to bilkul nahi chala. Naye accounts par GitHub schedule
+# ko throttle karta hai. Is liye cron pe bharosa nahi.
 #
-# Photos private rehni hain, is liye private/public ka ye combination
-# chahiye: alarm public, maalik private.
+# ---- Tareeqa ----
+# Is workflow ka kaam hai: APNE AAP ko dobara jagna. Ye chalta rehta hai
+# (max ~5.5 ghante, GitHub ki 6 ghante ki hadd), har 2 minute me Pakistan ka
+# waqt dekhta hai, aur jab koi post ka waqt aata hai to private repo ko jagata
+# hai. Khatam hone se thodi der pehle ye KHUD ko dobara jagata hai - yani
+# zanjir (chain) khud ko chala rakhta hai, bina kisi cron ke.
+#
+# Photos private rehni hain, is liye ye combination chahiye: alarm public,
+# maalik private. Public repo ki GitHub "minutes" unlimited hoti hain, is liye
+# ise chalta rakhne ka koi kharcha nahi.
 on:
-  schedule:
-    - cron: "3,18,33,48 * * * *"   # ghante ki 4 quarter me, minute 3 ka offset
   workflow_dispatch:
+  schedule:
+    # Bonus: agar GitHub ka cron kabhi chalne lage to bhi kaam karega.
+    - cron: "17 * * * *"
 
 permissions:
   contents: read
@@ -21,67 +31,74 @@ permissions:
 jobs:
   fire:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # GitHub per job ki hadf 360 minute (6 ghante) hai. 355 rakh kar margin.
+    timeout-minutes: 355
     env:
       TOKEN: ${{ secrets.DISPATCH_TOKEN }}
-      REPO: jaseemferoz6-lang/urdu-quote-shorts
-      WF: daily.yml
+      PRIVATE_REPO: jaseemferoz6-lang/urdu-quote-shorts
+      PRIVATE_WF: daily.yml
+      SELF_REPO: jaseemferoz6-lang/jaseemferoz6-privacy
+      SELF_WF: trigger.yml
 
     steps:
-      - name: Kya is waqt koi post due hai?
-        id: gate
+      - name: Pahaar - Pakistan ke waqt ko dekhtay karo
         run: |
-          set -euo pipefail
-          HH=$(TZ=Asia/Karachi date +%H)
-          MM=$(TZ=Asia/Karachi date +%M)
-          now=$((10#$HH * 60 + 10#$MM))
-          echo "Pakistan waqt: $(TZ=Asia/Karachi date '+%H:%M')"
+          set -uo pipefail
 
           # ---- YEH TABLE config/config.yaml ke `slots:` se MATCH hona chahiye.
           # ---- Badalna ho to dono jagah badlein, warna post galat waqt pe.
-          # name | theme | window se | window tak (minutes)
-          cat <<'TABLE' > /tmp/table
-          midnight|00:00|02:30
+          # name | window se | window tak
+          TABLE='midnight|00:00|02:30
           morning|10:00|12:00
-          night|19:00|22:00
-          TABLE
+          night|19:00|22:00'
 
-          slot=""
-          while IFS='|' read -r name from to; do
-            [ -z "$name" ] && continue
-            sh=${from%:*}; sm=${from#*:}
-            eh=${to%:*};   em=${to#*:}
-            a=$((10#$sh * 60 + 10#$sm))
-            b=$((10#$eh * 60 + 10#$em))
-            if [ "$a" -le "$b" ]; then
-              [ "$now" -ge "$a" ] && [ "$now" -le "$b" ] && slot="$name"
-            else
-              # window jo raat ke baad tak chalta hai, jaise 19:00-22:00
-              [ "$now" -ge "$a" ] || [ "$now" -le "$b" ] && [ -z "$slot" ] && slot="$name"
+          pick_slot() {
+            local now=$1 line name from to a b
+            while IFS='|' read -r name from to; do
+              [ -z "${name:-}" ] && continue
+              a=$((10#${from%:*} * 60 + 10#${from#*:}))
+              b=$((10#${to%:*} * 60 + 10#${to#*:}))
+              if [ "$a" -le "$b" ]; then
+                if [ "$now" -ge "$a" ] && [ "$now" -le "$b" ]; then echo "$name"; return 0; fi
+              else
+                if [ "$now" -ge "$a" ] || [ "$now" -le "$b" ]; then echo "$name"; return 0; fi
+              fi
+            done <<< "$TABLE"
+            return 0
+          }
+
+          fire() {
+            # $1 = repo, $2 = workflow file, $3 = label
+            local code
+            code=$(curl -s -o /tmp/d.json -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$1/actions/workflows/$2/dispatches" \
+              -d '{"ref":"main"}')
+            echo "  fire $3 -> HTTP $code"
+            [ "$code" = "204" ] || { echo "::warning::dispatch nahi hua ($3, HTTP $code)"; cat /tmp/d.json || true; }
+            return 0
+          }
+
+          START=$(date +%s)
+          # 338 minute chalta hai, 355 ki hadf se thoda pehle khud ko jaga de.
+          END=$(( START + 338 * 60 ))
+          last=""
+          checks=0
+          echo "pahaar shuru: $(TZ=Asia/Karachi date '+%Y-%m-%d %H:%M') Pakistan waqt"
+
+          while [ "$(date +%s)" -lt "$END" ]; do
+            now=$(( 10#$(TZ=Asia/Karachi date +%H) * 60 + 10#$(TZ=Asia/Karachi date +%M) ))
+            slot=$(pick_slot "$now")
+            if [ -n "$slot" ] && [ "$slot" != "$last" ]; then
+              echo "$(TZ=Asia/Karachi date '+%H:%M') Pakistan waqt - $slot post bhej rahe hain"
+              fire "$PRIVATE_REPO" "$PRIVATE_WF" "$slot"
+              last="$slot"
             fi
-          done < /tmp/table
+            checks=$(( checks + 1 ))
+            sleep 120
+          done
 
-          if [ -n "$slot" ]; then
-            echo "due=true"  >> "$GITHUB_OUTPUT"
-            echo "slot=$slot" >> "$GITHUB_OUTPUT"
-            echo "iss waqt $slot post due hai"
-          else
-            echo "due=false" >> "$GITHUB_OUTPUT"
-            echo "koi slot nahi, private repo ko nahi bula rahe"
-          fi
-
-      - name: Private repo ka pipeline jagay do
-        if: steps.gate.outputs.due == 'true'
-        run: |
-          set -euo pipefail
-          code=$(curl -s -o /tmp/out.json -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO/actions/workflows/$WF/dispatches")
-          echo "HTTP $code"
-          cat /tmp/out.json || true
-          if [ "$code" != "204" ]; then
-            echo "::error::dispatch nahi hua (HTTP $code)"
-            exit 1
-          fi
-          echo "private repo ko ${{ steps.gate.outputs.slot }} ka kaam bhej diya"
+          echo "pahaar khatam: $checks baar ghanti dekha"
+          echo "zanjir ko jaari rakhne ke liye KHUD ko dobara jaga rahe hain"
+          fire "$SELF_REPO" "$SELF_WF" "self"
